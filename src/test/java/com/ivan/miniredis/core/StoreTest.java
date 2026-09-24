@@ -6,9 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for Store: basic get/set/delete behavior, plus LRU
- * eviction correctness under capacity pressure. Expiration (TTL) is
- * tested separately once that feature is added.
+ * Unit tests for Store: basic get/set/delete behavior, LRU eviction
+ * correctness under capacity pressure, and TTL expiration.
  */
 public class StoreTest {
 
@@ -124,5 +123,54 @@ public class StoreTest {
         assertEquals(1, store.get("a"));
         assertEquals(2, store.get("b"));
         assertEquals(4, store.get("d"));
+    }
+
+    @Test
+    public void keyWithNoTtlNeverExpires() {
+        Store store = new Store(10);
+
+        store.set("permanent", "value"); // no TTL given
+
+        assertEquals("value", store.get("permanent"));
+    }
+
+    @Test
+    public void keyWithFutureTtlIsStillAccessible() {
+        Store store = new Store(10);
+
+        store.set("session", "abc123", 60L); // expires 60 seconds from now
+
+        assertEquals("abc123", store.get("session"));
+    }
+
+    @Test
+    public void keyWithPastTtlIsTreatedAsExpired() throws InterruptedException {
+        Store store = new Store(10);
+
+        store.set("shortLived", "value", 0L); // expires immediately (0 seconds from now)
+        Thread.sleep(10); // ensure the clock has genuinely moved past expireAt
+
+        assertNull(store.get("shortLived"));
+    }
+
+    @Test
+    public void expiredKeyIsRemovedFromStoreOnAccess() throws InterruptedException {
+        Store store = new Store(10);
+
+        store.set("shortLived", "value", 0L);
+        Thread.sleep(10);
+
+        store.get("shortLived"); // triggers lazy removal
+        assertEquals(0, store.size());
+    }
+
+    @Test
+    public void settingExistingKeyUpdatesItsTtl() {
+        Store store = new Store(10);
+
+        store.set("key", "first", 0L);      // would expire immediately
+        store.set("key", "second", 60L);    // overwritten with a fresh, far-future TTL
+
+        assertEquals("second", store.get("key"));
     }
 }

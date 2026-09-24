@@ -10,16 +10,31 @@ package com.ivan.miniredis.core;
  * the value) is what allows eviction to remove the correct entry from
  * the HashMap once the least-recently-used node is identified from the
  * back of the list.
+ *
+ * expireAt holds the timestamp (in epoch milliseconds) at which this
+ * entry becomes invalid, or null if the entry has no expiration.
+ * Expiration is checked lazily, at the point a key is accessed, rather
+ * than through a background sweep; see Store for that logic.
  */
 public class Node {
 
     final String key;
     Object value;
+    Long expireAt;
     Node prev;
     Node next;
 
-    public Node(String key, Object value) {
+    public Node(String key, Object value, Long expireAt) {
         this.key = key;
         this.value = value;
+        this.expireAt = expireAt;
+    }
+
+    /**
+     * Returns true if this node has an expiration set and that time
+     * has already passed.
+     */
+    boolean isExpired() {
+        return expireAt != null && System.currentTimeMillis() >= expireAt;
     }
 }
