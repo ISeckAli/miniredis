@@ -173,4 +173,42 @@ public class StoreTest {
 
         assertEquals("second", store.get("key"));
     }
+
+    @Test
+    public void evictingFromAnEmptyStoreDoesNothing() {
+        Store store = new Store(5);
+
+        // No entries have ever been set. A get/delete on an empty store
+        // should behave the same as a missing key, not throw or corrupt
+        // internal state (head/tail pointers should both remain null).
+        assertNull(store.get("anything"));
+        store.delete("anything");
+
+        assertEquals(0, store.size());
+
+        // Confirm the store is still fully functional afterward.
+        store.set("first", "value");
+        assertEquals("value", store.get("first"));
+        assertEquals(1, store.size());
+    }
+
+    @Test
+    public void keysWithAndWithoutTtlCoexistCorrectly() {
+        Store store = new Store(10);
+
+        store.set("permanent", "staysForever");       // no TTL
+        store.set("temporary", "expiresSoon", 0L);     // expires immediately
+
+        try {
+            Thread.sleep(10);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        // The TTL key should be gone; the permanent key should be
+        // completely unaffected by its neighbor's expiration.
+        assertNull(store.get("temporary"));
+        assertEquals("staysForever", store.get("permanent"));
+        assertEquals(1, store.size());
+    }
 }
