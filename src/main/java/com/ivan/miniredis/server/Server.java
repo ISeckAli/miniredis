@@ -6,12 +6,14 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.file.Path;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import com.ivan.miniredis.core.CommandProcessor;
 import com.ivan.miniredis.core.Store;
+import com.ivan.miniredis.core.WriteAheadLog;
 
 /**
  * A TCP server that exposes a Store over a plain-text network protocol.
@@ -41,6 +43,7 @@ public class Server {
     public static final int DEFAULT_PORT = 6380;
     private static final int DEFAULT_CAPACITY = 100;
     private static final int THREAD_POOL_SIZE = 20;
+    private static final String DEFAULT_LOG_FILE = "miniredis.log";
 
     private final int port;
     private final CommandProcessor processor;
@@ -139,12 +142,23 @@ public class Server {
     }
 
     /**
-     * Application entry point: builds a Store and CommandProcessor
-     * with default settings and starts the server on the default port.
+     * Application entry point: builds a Store, a WriteAheadLog pointed
+     * at a fixed log file in the current working directory, and a
+     * CommandProcessor wired to both. Before accepting any client
+     * connections, replays the log to restore state from any previous
+     * run, so a restart does not lose data that was already
+     * successfully written and acknowledged before the process last
+     * stopped.
      */
     public static void main(String[] args) throws IOException {
         Store store = new Store(DEFAULT_CAPACITY);
-        CommandProcessor processor = new CommandProcessor(store);
+        WriteAheadLog log = new WriteAheadLog(Path.of(DEFAULT_LOG_FILE));
+        CommandProcessor processor = new CommandProcessor(store, log);
+
+        System.out.println("Replaying write-ahead log from " + DEFAULT_LOG_FILE + "...");
+        processor.replayFromLog();
+        System.out.println("Replay complete. Store size: " + store.size());
+
         Server server = new Server(DEFAULT_PORT, processor);
         server.start();
     }
