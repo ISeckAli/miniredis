@@ -6,6 +6,9 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import com.ivan.miniredis.core.CommandProcessor;
 import com.ivan.miniredis.core.Store;
@@ -15,40 +18,46 @@ import com.ivan.miniredis.core.Store;
  *
  * A Server instance owns a ServerSocket bound to a specific port and a
  * CommandProcessor to delegate command handling to. Once started, it
- * accepts client connections one at a time. For each connected client,
- * it reads a line of text (a command such as "SET foo bar"), delegates
- * parsing and execution to CommandProcessor, and writes the response
- * back to that same client, one response per command, until the
- * client disconnects.
+ * accepts client connections and hands each one off to a thread pool,
+ * allowing multiple clients to be connected and issuing commands
+ * genuinely simultaneously.
  *
- * This initial version is intentionally single-threaded: only one
- * client can be connected at a time. Handling multiple simultaneous
- * clients safely, without corrupting the shared Store's internal
- * state, requires real concurrency control and is addressed
- * separately, once this single-client version is proven correct.
+ * Concurrent access to the shared Store is made safe by Store's own
+ * internal locking (its public methods are synchronized), not by
+ * anything in this class; Server's only responsibility with respect to
+ * concurrency is making sure each client runs on its own thread so
+ * that one slow or idle client cannot block any other client's
+ * commands from being processed.
  *
- * Server is a standalone class (not just a main method) specifically
- * so it can be started and stopped programmatically, most notably by
- * automated tests that need to connect to a real running instance
- * without launching a separate process.
+ * A fixed-size thread pool (via ExecutorService) is used rather than
+ * spawning a raw new Thread per client. This bounds the maximum number
+ * of concurrently handled clients to a known, reasonable limit,
+ * preventing an unbounded number of connections from exhausting system
+ * resources, and reuses threads rather than paying thread-creation
+ * cost on every single connection.
  */
 public class Server {
 
     public static final int DEFAULT_PORT = 6380;
     private static final int DEFAULT_CAPACITY = 100;
+    private static final int THREAD_POOL_SIZE = 20;
 
     private final int port;
     private final CommandProcessor processor;
+    private final ExecutorService clientHandlerPool;
     private ServerSocket serverSocket;
     private volatile boolean running;
 
     public Server(int port, CommandProcessor processor) {
         this.port = port;
         this.processor = processor;
+        this.clientHandlerPool = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
     }
 
     /**
      * Binds the server socket and begins accepting client connections.
+     * Each accepted connection is dispatched to the thread pool and
+     * handled concurrently with any other currently connected clients.
      * This call blocks the calling thread for as long as the server
      * runs, so callers that need to do other work concurrently (such
      * as tests) should invoke this from a separate thread.
@@ -62,7 +71,7 @@ public class Server {
             try {
                 Socket clientSocket = serverSocket.accept();
                 System.out.println("Client connected: " + clientSocket.getRemoteSocketAddress());
-                handleClient(clientSocket);
+                clientHandlerPool.submit(() -> handleClient(clientSocket));
             } catch (IOException e) {
                 if (running) {
                     System.err.println("Error accepting client connection: " + e.getMessage());
@@ -75,12 +84,24 @@ public class Server {
 
     /**
      * Stops the server: closes the listening socket, which causes the
-     * blocking accept() call in start() to exit its loop.
+     * blocking accept() call in start() to exit its loop, and shuts
+     * down the thread pool so any client threads still running are
+     * given a chance to finish before this call returns.
      */
     public void stop() throws IOException {
         running = false;
         if (serverSocket != null && !serverSocket.isClosed()) {
             serverSocket.close();
+        }
+
+        clientHandlerPool.shutdown();
+        try {
+            if (!clientHandlerPool.awaitTermination(2, TimeUnit.SECONDS)) {
+                clientHandlerPool.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            clientHandlerPool.shutdownNow();
+            Thread.currentThread().interrupt();
         }
     }
 

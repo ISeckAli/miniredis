@@ -25,6 +25,18 @@ import java.util.Map;
  * approach would keep memory tighter at the cost of real added
  * complexity, and is noted as a possible extension rather than
  * implemented here.
+ *
+ * Thread-safety: the public methods below are synchronized, meaning
+ * only one thread can execute inside any of them at a time. This is a
+ * single, coarse-grained lock around the entire Store rather than
+ * finer-grained locking (for example, a ReentrantReadWriteLock that
+ * would allow concurrent reads). Coarse-grained locking is simpler to
+ * reason about and is sufficient here: this store is not expected to
+ * face heavy read contention at a scale where lock granularity would
+ * be a real bottleneck. A read-write lock is a legitimate next step if
+ * profiling ever showed otherwise, but is not implemented here, since
+ * introducing it without a measured need would be added complexity
+ * without a proven benefit.
  */
 public class Store {
 
@@ -45,7 +57,7 @@ public class Store {
     /**
      * Stores a value under the given key with no expiration.
      */
-    public void set(String key, Object value) {
+    public synchronized void set(String key, Object value) {
         set(key, value, null);
     }
 
@@ -56,7 +68,7 @@ public class Store {
      * entry. If the key is new and the store is at capacity, the least
      * recently used entry is evicted to make room.
      */
-    public void set(String key, Object value, Long ttlSeconds) {
+    public synchronized void set(String key, Object value, Long ttlSeconds) {
         Long expireAt = (ttlSeconds == null) ? null : System.currentTimeMillis() + (ttlSeconds * 1000);
 
         Node existing = data.get(key);
@@ -84,7 +96,7 @@ public class Store {
      * entry has expired, it is removed from the store as part of this
      * call, rather than left in place until some future sweep.
      */
-    public Object get(String key) {
+    public synchronized Object get(String key) {
         Node node = data.get(key);
 
         if (node == null) {
@@ -105,7 +117,7 @@ public class Store {
      * Removes the key and its value from the store, if present.
      * Does nothing if the key does not exist.
      */
-    public void delete(String key) {
+    public synchronized void delete(String key) {
         Node node = data.get(key);
 
         if (node == null) {
@@ -121,7 +133,7 @@ public class Store {
      * including any that have expired but have not yet been accessed
      * (and therefore not yet lazily removed).
      */
-    public int size() {
+    public synchronized int size() {
         return data.size();
     }
 
@@ -130,7 +142,13 @@ public class Store {
     // These methods keep the list's head/tail pointers and each node's
     // prev/next pointers consistent. They are private because the list
     // is purely an internal recency-tracking mechanism; nothing outside
-    // Store should ever manipulate it directly.
+    // Store should ever manipulate it directly. They are intentionally
+    // NOT separately synchronized: they are only ever called from
+    // within an already-synchronized public method, so they safely
+    // inherit that method's lock. Adding synchronized here too would
+    // be redundant, not incorrect, but it is left off to keep it clear
+    // that these are always invoked under an existing lock, never on
+    // their own.
 
     private void addToFront(Node node) {
         node.prev = null;
